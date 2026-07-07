@@ -1,57 +1,69 @@
-from fastapi import FastAPI, Header, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List
+from fastapi import FastAPI, Request
+from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
+from fastapi.responses import Response
+import time
+import uuid
 
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-API_KEY = "ak_w0lu0scj3iuep6zwxzg0e894"
 EMAIL = "23f2001401@ds.study.iitm.ac.in"
 
+START_TIME = time.time()
 
-class Event(BaseModel):
-    user: str
-    amount: float
-    ts: int
+REQUEST_COUNTER = Counter(
+    "http_requests_total",
+    "Total HTTP Requests"
+)
+
+logs = []
 
 
-class AnalyticsRequest(BaseModel):
-    events: List[Event]
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    REQUEST_COUNTER.inc()
+
+    request_id = str(uuid.uuid4())
+
+    logs.append({
+        "level": "INFO",
+        "ts": time.time(),
+        "path": request.url.path,
+        "request_id": request_id
+    })
+
+    if len(logs) > 1000:
+        logs.pop(0)
+
+    response = await call_next(request)
+    return response
 
 
-@app.post("/analytics")
-def analytics(
-    req: AnalyticsRequest,
-    x_api_key: str = Header(None)
-):
-    if x_api_key != API_KEY:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    total_events = len(req.events)
-    unique_users = len(set(e.user for e in req.events))
-
-    revenue = 0.0
-    totals = {}
-
-    for e in req.events:
-        if e.amount > 0:
-            revenue += e.amount
-            totals[e.user] = totals.get(e.user, 0) + e.amount
-
-    top_user = max(totals, key=totals.get) if totals else ""
-
+@app.get("/work")
+def work(n: int = 1):
+    for _ in range(n):
+        pass
     return {
         "email": EMAIL,
-        "total_events": total_events,
-        "unique_users": unique_users,
-        "revenue": revenue,
-        "top_user": top_user
+        "done": n
     }
+
+
+@app.get("/healthz")
+def health():
+    return {
+        "status": "ok",
+        "uptime_s": time.time() - START_TIME
+    }
+
+
+@app.get("/metrics")
+def metrics():
+    return Response(
+        generate_latest(),
+        media_type=CONTENT_TYPE_LATEST
+    )
+
+
+@app.get("/logs/tail")
+def tail(limit: int = 10):
+    return logs[-limit:]
